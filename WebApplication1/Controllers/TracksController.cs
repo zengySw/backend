@@ -21,7 +21,11 @@ public class TracksController : ControllerBase
         _trackService = trackService;
     }
 
-    // GET /api/v1/tracks?limit=&offset=
+    /// <summary>
+    /// Получить список треков с пагинацией
+    /// </summary>
+    /// <param name="limit">Количество треков на странице (по умолчанию 50)</param>
+    /// <param name="offset">Смещение (по умолчанию 0)</param>
     [HttpGet("tracks")]
     public async Task<IActionResult> GetTracks([FromQuery] int? limit, [FromQuery] int? offset)
     {
@@ -29,14 +33,18 @@ public class TracksController : ControllerBase
         var o = offset.GetValueOrDefault(0);
 
         var tracks = await _trackService.GetAllTracksAsync(l, o);
+        var total = await _trackService.GetTotalTracksCountAsync(); // ✅ ПРАВИЛЬНЫЙ total
+
         return Ok(new TrackResponse
         {
             Tracks = tracks,
-            Total = tracks.Count
+            Total = total
         });
     }
 
-    // GET /api/v1/tracks/{id}
+    /// <summary>
+    /// Получить трек по ID
+    /// </summary>
     [HttpGet("tracks/{id}")]
     public async Task<IActionResult> GetTrack(string id)
     {
@@ -54,7 +62,9 @@ public class TracksController : ControllerBase
         return Ok(track);
     }
 
-    // GET /api/v1/search?q=&limit=&offset=
+    /// <summary>
+    /// Поиск треков по названию, исполнителю или альбому
+    /// </summary>
     [HttpGet("search")]
     public async Task<IActionResult> Search([FromQuery] string? q, [FromQuery] int? limit, [FromQuery] int? offset)
     {
@@ -79,7 +89,9 @@ public class TracksController : ControllerBase
         });
     }
 
-    // GET /api/v1/stream?id=...
+    /// <summary>
+    /// Стриминг аудио файла
+    /// </summary>
     [HttpGet("stream")]
     public async Task<IActionResult> Stream([FromQuery] string? id)
     {
@@ -124,7 +136,9 @@ public class TracksController : ControllerBase
         return File(fs, contentType, enableRangeProcessing: true);
     }
 
-    // POST /api/v1/upload (protected)
+    /// <summary>
+    /// Загрузить новый трек (требуется авторизация)
+    /// </summary>
     [HttpPost("upload")]
     [Authorize]
     [RequestSizeLimit(200_000_000)]
@@ -173,7 +187,9 @@ public class TracksController : ControllerBase
         }
     }
 
-    // DELETE /api/v1/tracks/{id} (protected)
+    /// <summary>
+    /// Удалить трек (требуется авторизация)
+    /// </summary>
     [HttpDelete("tracks/{id}")]
     [Authorize]
     public async Task<IActionResult> Delete(string id)
@@ -187,6 +203,15 @@ public class TracksController : ControllerBase
                 Message = "Track deleted successfully"
             });
         }
+        catch (FileNotFoundException)
+        {
+            return NotFound(new ErrorResponse
+            {
+                Error = "Not Found",
+                Message = "Track not found",
+                Code = 404
+            });
+        }
         catch (Exception ex)
         {
             return StatusCode(500, new ErrorResponse
@@ -198,7 +223,9 @@ public class TracksController : ControllerBase
         }
     }
 
-    // POST /api/v1/scan (protected)
+    /// <summary>
+    /// Сканировать директорию с музыкой и добавить новые треки (требуется авторизация)
+    /// </summary>
     [HttpPost("scan")]
     [Authorize]
     public async Task<IActionResult> Scan()
@@ -224,7 +251,9 @@ public class TracksController : ControllerBase
         }
     }
 
-    // GET /api/v1/export/csv (protected)
+    /// <summary>
+    /// Экспортировать список треков в CSV (требуется авторизация)
+    /// </summary>
     [HttpGet("export/csv")]
     [Authorize]
     public async Task<IActionResult> ExportCsv()
@@ -243,7 +272,9 @@ public class TracksController : ControllerBase
         return File(bytes, "text/csv; charset=utf-8", "soundy_export.csv");
     }
 
-    // GET /api/v1/export/json (protected)
+    /// <summary>
+    /// Экспортировать список треков в JSON (требуется авторизация)
+    /// </summary>
     [HttpGet("export/json")]
     [Authorize]
     public async Task<IActionResult> ExportJson()

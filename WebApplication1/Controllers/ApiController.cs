@@ -4,25 +4,21 @@ using Microsoft.AspNetCore.Mvc;
 using Soundy.Backend.Models;
 using Soundy.Backend.Services;
 
-namespace Soundy.Backend.Controllers;
+namespace soundy.Controllers;
 
 [ApiController]
 [Route("api/v1")]
-public class ApiController : ControllerBase
+public class ApiController(IAuthService authService) : ControllerBase
 {
-    private readonly IAuthService _authService;
-
-    public ApiController(IAuthService authService)
-    {
-        _authService = authService;
-    }
+    private readonly IAuthService _authService = authService;
 
     [HttpPost("login")]
     public async Task<IActionResult> Login([FromBody] LoginRequest req)
     {
         try
         {
-            var (token, expiresAt, user) = await _authService.LoginAsync(req.Username, req.Password);
+            // Fully qualify the User type to avoid ambiguity
+            (string token, DateTime expiresAt, Soundy.Backend.Models.User user) = await _authService.LoginAsync(req.Username, req.Password);
 
             var resp = new LoginResponse
             {

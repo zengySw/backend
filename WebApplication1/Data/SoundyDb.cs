@@ -133,6 +133,17 @@ INSERT INTO tracks (
         return tracks;
     }
 
+    public int GetTotalTracksCount()
+    {
+        const string sql = "SELECT COUNT(*) FROM tracks";
+
+        using var cmd = _connection.CreateCommand();
+        cmd.CommandText = sql;
+
+        var result = cmd.ExecuteScalar();
+        return Convert.ToInt32(result);
+    }
+
     public void DeleteTrack(string trackId)
     {
         const string sql = "DELETE FROM tracks WHERE track_id = @track_id";
