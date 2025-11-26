@@ -99,96 +99,77 @@ INSERT INTO tracks (
 
     public Track? GetTrack(string trackId)
     {
-        const string sql = @"
-SELECT track_id, artist_name, track_title, album, genre, year,
-       duration_seconds, file_path, cover_url, file_size, format, bitrate,
-       play_count, added_at, updated_at
-FROM tracks WHERE track_id = @track_id;
-";
+        const string sql = "SELECT * FROM tracks WHERE track_id = @track_id LIMIT 1";
 
         using var cmd = _connection.CreateCommand();
         cmd.CommandText = sql;
         cmd.Parameters.AddWithValue("@track_id", trackId);
 
         using var reader = cmd.ExecuteReader();
-        if (!reader.Read()) return null;
+        if (reader.Read())
+        {
+            return ReadTrack(reader);
+        }
 
-        return MapTrack(reader);
+        return null;
     }
 
     public List<Track> GetAllTracks(int limit, int offset)
     {
-        const string sql = @"
-SELECT track_id, artist_name, track_title, album, genre, year,
-       duration_seconds, file_path, cover_url, file_size, format, bitrate,
-       play_count, added_at, updated_at
-FROM tracks
-ORDER BY datetime(added_at) DESC
-LIMIT @limit OFFSET @offset;
-";
+        const string sql = "SELECT * FROM tracks ORDER BY added_at DESC LIMIT @limit OFFSET @offset";
+
         using var cmd = _connection.CreateCommand();
         cmd.CommandText = sql;
         cmd.Parameters.AddWithValue("@limit", limit);
         cmd.Parameters.AddWithValue("@offset", offset);
 
+        var tracks = new List<Track>();
         using var reader = cmd.ExecuteReader();
-        var list = new List<Track>();
-
         while (reader.Read())
         {
-            list.Add(MapTrack(reader));
+            tracks.Add(ReadTrack(reader));
         }
 
-        return list;
+        return tracks;
     }
 
-    public bool TrackExists(string trackId)
+    public void DeleteTrack(string trackId)
     {
-        const string sql = "SELECT EXISTS(SELECT 1 FROM tracks WHERE track_id = @id);";
-        using var cmd = _connection.CreateCommand();
-        cmd.CommandText = sql;
-        cmd.Parameters.AddWithValue("@id", trackId);
-        var result = cmd.ExecuteScalar();
-        return Convert.ToInt32(result) == 1;
-    }
+        const string sql = "DELETE FROM tracks WHERE track_id = @track_id";
 
-    public int DeleteTrack(string trackId)
-    {
-        const string sql = "DELETE FROM tracks WHERE track_id = @id;";
         using var cmd = _connection.CreateCommand();
         cmd.CommandText = sql;
-        cmd.Parameters.AddWithValue("@id", trackId);
-        return cmd.ExecuteNonQuery();
-    }
-
-    public void IncrementPlayCount(string trackId)
-    {
-        const string sql = "UPDATE tracks SET play_count = play_count + 1 WHERE track_id = @id;";
-        using var cmd = _connection.CreateCommand();
-        cmd.CommandText = sql;
-        cmd.Parameters.AddWithValue("@id", trackId);
+        cmd.Parameters.AddWithValue("@track_id", trackId);
         cmd.ExecuteNonQuery();
     }
 
-    private static Track MapTrack(IDataRecord r)
+    public void UpdatePlayCount(string trackId)
+    {
+        const string sql = "UPDATE tracks SET play_count = play_count + 1, updated_at = CURRENT_TIMESTAMP WHERE track_id = @track_id";
+
+        using var cmd = _connection.CreateCommand();
+        cmd.CommandText = sql;
+        cmd.Parameters.AddWithValue("@track_id", trackId);
+        cmd.ExecuteNonQuery();
+    }
+
+    private Track ReadTrack(IDataReader reader)
     {
         return new Track
         {
-            TrackId = r.GetString(0),
-            ArtistName = r.GetString(1),
-            TrackTitle = r.GetString(2),
-            Album = r.IsDBNull(3) ? "" : r.GetString(3),
-            Genre = r.IsDBNull(4) ? "" : r.GetString(4),
-            Year = r.IsDBNull(5) ? 0 : r.GetInt32(5),
-            DurationSeconds = r.IsDBNull(6) ? 0 : r.GetInt32(6),
-            FilePath = r.GetString(7),
-            CoverUrl = r.IsDBNull(8) ? null : r.GetString(8),
-            FileSize = r.IsDBNull(9) ? 0L : r.GetInt64(9),
-            Format = r.IsDBNull(10) ? "" : r.GetString(10),
-            Bitrate = r.IsDBNull(11) ? 0 : r.GetInt32(11),
-            PlayCount = r.IsDBNull(12) ? 0 : r.GetInt32(12),
-            AddedAt = DateTime.TryParse(r.GetString(13), out var a) ? a : DateTime.UtcNow,
-            UpdatedAt = DateTime.TryParse(r.GetString(14), out var u) ? u : DateTime.UtcNow
+            TrackId = reader.GetString(reader.GetOrdinal("track_id")),
+            ArtistName = reader.GetString(reader.GetOrdinal("artist_name")),
+            TrackTitle = reader.GetString(reader.GetOrdinal("track_title")),
+            Album = reader.IsDBNull(reader.GetOrdinal("album")) ? null : reader.GetString(reader.GetOrdinal("album")),
+            Genre = reader.IsDBNull(reader.GetOrdinal("genre")) ? null : reader.GetString(reader.GetOrdinal("genre")),
+            Year = reader.GetInt32(reader.GetOrdinal("year")),
+            DurationSeconds = reader.GetInt32(reader.GetOrdinal("duration_seconds")),
+            FilePath = reader.GetString(reader.GetOrdinal("file_path")),
+            CoverUrl = reader.IsDBNull(reader.GetOrdinal("cover_url")) ? null : reader.GetString(reader.GetOrdinal("cover_url")),
+            FileSize = reader.GetInt64(reader.GetOrdinal("file_size")),
+            Format = reader.GetString(reader.GetOrdinal("format")),
+            Bitrate = reader.GetInt32(reader.GetOrdinal("bitrate")),
+            PlayCount = reader.GetInt32(reader.GetOrdinal("play_count"))
         };
     }
 
@@ -196,38 +177,36 @@ LIMIT @limit OFFSET @offset;
 
     public void CreateUser(string username, string passwordHash)
     {
-        const string sql = "INSERT INTO users (username, password_hash) VALUES (@u, @p);";
+        const string sql = @"
+            INSERT OR IGNORE INTO users (username, password_hash)
+            VALUES (@username, @password_hash)";
+
         using var cmd = _connection.CreateCommand();
         cmd.CommandText = sql;
-        cmd.Parameters.AddWithValue("@u", username);
-        cmd.Parameters.AddWithValue("@p", passwordHash);
-
-        try
-        {
-            cmd.ExecuteNonQuery();
-        }
-        catch (SqliteException)
-        {
-            // скорей всего уже есть — как в Go-коде, просто игнорим ошибку
-        }
+        cmd.Parameters.AddWithValue("@username", username);
+        cmd.Parameters.AddWithValue("@password_hash", passwordHash);
+        cmd.ExecuteNonQuery();
     }
 
     public User? GetUserByUsername(string username)
     {
-        const string sql = "SELECT id, username, password_hash, created_at FROM users WHERE username = @u;";
+        const string sql = "SELECT * FROM users WHERE username = @username LIMIT 1";
+
         using var cmd = _connection.CreateCommand();
         cmd.CommandText = sql;
-        cmd.Parameters.AddWithValue("@u", username);
+        cmd.Parameters.AddWithValue("@username", username);
 
         using var reader = cmd.ExecuteReader();
-        if (!reader.Read()) return null;
-
-        return new User
+        if (reader.Read())
         {
-            Id = reader.GetInt32(0),
-            Username = reader.GetString(1),
-            PasswordHash = reader.GetString(2),
-            CreatedAt = DateTime.TryParse(reader.GetString(3), out var c) ? c : DateTime.UtcNow
-        };
+            return new User
+            {
+                Id = reader.GetInt32(reader.GetOrdinal("id")),
+                Username = reader.GetString(reader.GetOrdinal("username")),
+                PasswordHash = reader.GetString(reader.GetOrdinal("password_hash"))
+            };
+        }
+
+        return null;
     }
 }

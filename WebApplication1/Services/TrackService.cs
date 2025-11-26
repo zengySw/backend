@@ -2,6 +2,7 @@
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
@@ -38,7 +39,7 @@ public class TrackService : ITrackService
             _cache[t.TrackId] = t;
         }
 
-        Console.WriteLine($"Loaded {tracks.Count} tracks into cache");
+        Console.WriteLine($"✅ Loaded {tracks.Count} tracks into cache");
         return Task.CompletedTask;
     }
 
@@ -75,139 +76,140 @@ public class TrackService : ITrackService
             (t.TrackTitle ?? "").ToLowerInvariant().Contains(lower) ||
             (t.Album ?? "").ToLowerInvariant().Contains(lower));
 
-        var page = filtered.GetRange(
-            Math.Min(offset, filtered.Count),
-            Math.Max(0, Math.Min(limit, filtered.Count - offset))
-        );
+        var page = filtered.Skip(offset).Take(limit).ToList();
 
         return Task.FromResult(page);
     }
 
     public async Task<Track> UploadTrackAsync(IFormFile audioFile, CreateTrackRequest? metadata, IFormFile? coverFile)
     {
-        var ext = Path.GetExtension(audioFile.FileName).ToLowerInvariant();
-        if (!IsValidAudioFormat(ext))
-            throw new InvalidOperationException($"Unsupported audio format: {ext}");
-
         if (audioFile.Length > _maxFileSize)
-            throw new InvalidOperationException($"File too large (max {_maxFileSize / (1024 * 1024)} MB)");
+            throw new InvalidOperationException($"File too large: {audioFile.Length} > {_maxFileSize}");
 
-        var tmpPath = Path.Combine(_musicDir, $"tmp_{Guid.NewGuid()}{ext}");
-        await using (var fs = File.Create(tmpPath))
+        var extension = Path.GetExtension(audioFile.FileName).ToLowerInvariant();
+        var allowedExtensions = new[] { ".mp3", ".wav", ".flac", ".m4a", ".ogg" };
+
+        if (!allowedExtensions.Contains(extension))
+            throw new InvalidOperationException($"Unsupported format: {extension}");
+
+        // Создаём уникальное имя файла
+        var fileName = $"{Guid.NewGuid()}{extension}";
+        var filePath = Path.Combine(_musicDir, fileName);
+
+        // Сохраняем аудио файл
+        using (var stream = new FileStream(filePath, FileMode.Create))
         {
-            await audioFile.CopyToAsync(fs);
+            await audioFile.CopyToAsync(stream);
         }
 
-        try
+        // Извлекаем метаданные
+        var track = ExtractMetadata(filePath);
+
+        // Применяем пользовательские метаданные
+        if (metadata != null)
         {
-            var track = ExtractMetadata(tmpPath);
-
-            if (metadata != null)
-            {
-                if (!string.IsNullOrWhiteSpace(metadata.ArtistName))
-                    track.ArtistName = metadata.ArtistName!;
-                if (!string.IsNullOrWhiteSpace(metadata.TrackTitle))
-                    track.TrackTitle = metadata.TrackTitle!;
-                if (!string.IsNullOrWhiteSpace(metadata.Album))
-                    track.Album = metadata.Album!;
-            }
-
-            track.TrackId = GenerateTrackId(track.ArtistName, track.TrackTitle, track.DurationSeconds);
-            track.Format = ext.TrimStart('.');
-            track.FileSize = new FileInfo(tmpPath).Length;
-
-            if (_db.TrackExists(track.TrackId))
-            {
-                File.Delete(tmpPath);
-                throw new InvalidOperationException("Track already exists");
-            }
-
-            var finalPath = Path.Combine(_musicDir, track.TrackId + ext);
-            File.Move(tmpPath, finalPath);
-            track.FilePath = finalPath;
-
-            if (coverFile != null)
-            {
-                var coverPath = Path.Combine(_coversDir, track.TrackId + ".jpg");
-                await using var coverStream = File.Create(coverPath);
-                await coverFile.CopyToAsync(coverStream);
-                track.CoverUrl = $"/covers/{track.TrackId}.jpg";
-            }
-
-            track.AddedAt = DateTime.UtcNow;
-            track.UpdatedAt = track.AddedAt;
-
-            _db.CreateTrack(track);
-            _cache[track.TrackId] = track;
-
-            return track;
+            if (!string.IsNullOrWhiteSpace(metadata.ArtistName))
+                track.ArtistName = metadata.ArtistName;
+            if (!string.IsNullOrWhiteSpace(metadata.TrackTitle))
+                track.TrackTitle = metadata.TrackTitle;
+            if (!string.IsNullOrWhiteSpace(metadata.Album))
+                track.Album = metadata.Album;
         }
-        catch
+
+        // Сохраняем обложку
+        if (coverFile != null)
         {
-            if (File.Exists(tmpPath))
-                File.Delete(tmpPath);
-            throw;
+            var coverFileName = $"{track.TrackId}.jpg";
+            var coverPath = Path.Combine(_coversDir, coverFileName);
+
+            using (var stream = new FileStream(coverPath, FileMode.Create))
+            {
+                await coverFile.CopyToAsync(stream);
+            }
+
+            track.CoverUrl = $"/covers/{coverFileName}";
         }
+
+        // Сохраняем в БД
+        _db.CreateTrack(track);
+        _cache[track.TrackId] = track;
+
+        Console.WriteLine($"🎵 Uploaded: {track.ArtistName} - {track.TrackTitle}");
+
+        return track;
     }
 
     public async Task DeleteTrackAsync(string trackId)
     {
         var track = await GetTrackAsync(trackId);
         if (track == null)
-            throw new InvalidOperationException("Track not found");
+            throw new FileNotFoundException("Track not found");
 
+        // Удаляем из БД
         _db.DeleteTrack(trackId);
 
+        // Удаляем из кэша
+        _cache.TryRemove(trackId, out _);
+
+        // Удаляем файлы
         if (File.Exists(track.FilePath))
             File.Delete(track.FilePath);
 
         if (!string.IsNullOrEmpty(track.CoverUrl))
         {
-            var coverPath = Path.Combine(".", track.CoverUrl.TrimStart('/').Replace("/", Path.DirectorySeparatorChar.ToString()));
+            var coverPath = Path.Combine(_coversDir, Path.GetFileName(track.CoverUrl));
             if (File.Exists(coverPath))
                 File.Delete(coverPath);
         }
 
-        _cache.TryRemove(trackId, out _);
+        Console.WriteLine($"🗑️ Deleted: {track.ArtistName} - {track.TrackTitle}");
     }
 
-    public Task<int> ScanDirectoryAsync()
+    public async Task<int> ScanDirectoryAsync()
     {
-        var files = Directory.GetFiles(_musicDir);
-        var indexed = 0;
+        if (!Directory.Exists(_musicDir))
+            return 0;
 
-        foreach (var path in files)
+        var allowedExtensions = new[] { ".mp3", ".wav", ".flac", ".m4a", ".ogg" };
+        var files = Directory.GetFiles(_musicDir, "*.*", SearchOption.TopDirectoryOnly)
+            .Where(f => allowedExtensions.Contains(Path.GetExtension(f).ToLowerInvariant()))
+            .ToList();
+
+        int indexed = 0;
+
+        foreach (var file in files)
         {
-            var ext = Path.GetExtension(path).ToLowerInvariant();
-            if (!IsValidAudioFormat(ext)) continue;
+            try
+            {
+                // Проверяем, не существует ли уже
+                var existing = _db.GetAllTracks(10000, 0).FirstOrDefault(t => t.FilePath == file);
+                if (existing != null)
+                    continue;
 
-            var track = ExtractMetadata(path);
-            track.TrackId = GenerateTrackId(track.ArtistName, track.TrackTitle, track.DurationSeconds);
-            track.FilePath = path;
-            track.Format = ext.TrimStart('.');
-            track.FileSize = new FileInfo(path).Length;
-            track.AddedAt = DateTime.UtcNow;
-            track.UpdatedAt = track.AddedAt;
+                var track = ExtractMetadata(file);
+                _db.CreateTrack(track);
+                _cache[track.TrackId] = track;
+                indexed++;
 
-            if (_db.TrackExists(track.TrackId))
-                continue;
-
-            _db.CreateTrack(track);
-            _cache[track.TrackId] = track;
-            indexed++;
+                Console.WriteLine($"📀 Indexed: {track.ArtistName} - {track.TrackTitle}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Failed to index {file}: {ex.Message}");
+            }
         }
 
-        return Task.FromResult(indexed);
+        Console.WriteLine($"✅ Scan complete: {indexed} new tracks");
+        return indexed;
     }
 
     public Task IncrementPlayCountAsync(string trackId)
     {
-        _db.IncrementPlayCount(trackId);
+        _db.UpdatePlayCount(trackId);
 
-        if (_cache.TryGetValue(trackId, out var t))
+        if (_cache.TryGetValue(trackId, out var track))
         {
-            t.PlayCount++;
-            _cache[trackId] = t;
+            track.PlayCount++;
         }
 
         return Task.CompletedTask;
@@ -215,43 +217,65 @@ public class TrackService : ITrackService
 
     private Track ExtractMetadata(string filePath)
     {
-        var fileName = Path.GetFileNameWithoutExtension(filePath);
-
-        string artist = "Unknown Artist";
-        string title = fileName;
-        string album = "Unknown Album";
-
-        if (fileName.Contains('-'))
+        try
         {
-            var parts = fileName.Split('-', 2);
-            artist = parts[0].Trim();
-            title = parts[1].Trim();
+            var file = TagLib.File.Create(filePath);
+            var fileInfo = new FileInfo(filePath);
+
+            var track = new Track
+            {
+                TrackId = GenerateTrackId(),
+                ArtistName = file.Tag.FirstPerformer ?? "Unknown Artist",
+                TrackTitle = file.Tag.Title ?? Path.GetFileNameWithoutExtension(filePath),
+                Album = file.Tag.Album ?? "Unknown Album",
+                Genre = file.Tag.FirstGenre,
+                Year = (int)file.Tag.Year,
+                DurationSeconds = (int)file.Properties.Duration.TotalSeconds,
+                FilePath = filePath,
+                FileSize = fileInfo.Length,
+                Format = Path.GetExtension(filePath).TrimStart('.').ToUpper(),
+                Bitrate = file.Properties.AudioBitrate,
+                PlayCount = 0
+            };
+
+            // Извлекаем обложку из метаданных
+            if (file.Tag.Pictures.Length > 0)
+            {
+                var picture = file.Tag.Pictures[0];
+                var coverFileName = $"{track.TrackId}.jpg";
+                var coverPath = Path.Combine(_coversDir, coverFileName);
+
+                File.WriteAllBytes(coverPath, picture.Data.Data);
+                track.CoverUrl = $"/covers/{coverFileName}";
+            }
+
+            return track;
         }
-
-        return new Track
+        catch (Exception ex)
         {
-            ArtistName = artist,
-            TrackTitle = title,
-            Album = album,
-            Genre = "",
-            Year = 0,
-            DurationSeconds = 0
-        };
+            // Fallback если TagLib не может прочитать файл
+            var fileInfo = new FileInfo(filePath);
+
+            return new Track
+            {
+                TrackId = GenerateTrackId(),
+                ArtistName = "Unknown Artist",
+                TrackTitle = Path.GetFileNameWithoutExtension(filePath),
+                Album = "Unknown Album",
+                DurationSeconds = 0,
+                FilePath = filePath,
+                FileSize = fileInfo.Length,
+                Format = Path.GetExtension(filePath).TrimStart('.').ToUpper(),
+                Bitrate = 0,
+                PlayCount = 0
+            };
+        }
     }
 
-    private static bool IsValidAudioFormat(string ext)
+    private string GenerateTrackId()
     {
-        var valid = new[] { ".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac" };
-        foreach (var v in valid)
-            if (ext == v) return true;
-        return false;
-    }
-
-    private static string GenerateTrackId(string artist, string title, int duration)
-    {
-        var data = $"{artist}|{title}|{duration}|{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}";
         using var sha = SHA256.Create();
-        var hash = sha.ComputeHash(Encoding.UTF8.GetBytes(data));
-        return BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant()[..16];
+        var hash = sha.ComputeHash(Encoding.UTF8.GetBytes(Guid.NewGuid().ToString()));
+        return BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
     }
 }

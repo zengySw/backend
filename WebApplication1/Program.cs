@@ -1,28 +1,23 @@
-﻿using System;
-using System.IO;
-using System.Text;
-using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.HttpOverrides;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
+﻿using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
+using Microsoft.Extensions.FileProviders;
+using Soundy.Backend.Controllers;
 using Soundy.Backend.Data;
-using Soundy.Backend.Middleware;
+using Soundy.Backend.Models;
 using Soundy.Backend.Services;
+using Soundy.Backend.Middleware;
+using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
-
 var cfg = builder.Configuration;
 
-// --- Config values ---
-var dbPath = cfg["Database:Path"] ?? "./data/soundy.db";
-var musicDir = cfg["Storage:MusicDir"] ?? "./data/music";
-var coversDir = cfg["Storage:CoversDir"] ?? "./data/covers";
+// Configuration
+var dbPath = cfg["Database:Path"] ?? "./Data/soundy.db";
+var musicDir = cfg["Storage:MusicDir"] ?? "./Data/music";
+var coversDir = cfg["Storage:CoversDir"] ?? "./Data/covers";
 var uploadMaxSize = long.Parse(cfg["Storage:UploadMaxSize"] ?? "104857600");
 
-var jwtSecret = cfg["Security:JWTSecret"] ?? "your-secret-key-change-in-production";
+var jwtSecret = cfg["Security:JwtSecret"] ?? "your-secret-key-change-in-production";
 var adminUsername = cfg["Security:AdminUsername"] ?? "admin";
 var adminPassword = cfg["Security:AdminPassword"] ?? "admin123";
 var sessionDurationHours = int.Parse(cfg["Security:SessionDurationHours"] ?? "24");
@@ -30,7 +25,7 @@ var sessionDurationHours = int.Parse(cfg["Security:SessionDurationHours"] ?? "24
 var rateRequests = int.Parse(cfg["RateLimit:Requests"] ?? "100");
 var rateWindowSeconds = int.Parse(cfg["RateLimit:WindowSeconds"] ?? "60");
 
-var corsOrigins = cfg.GetSection("CORS:Origins").Get<string[]>() ?? Array.Empty<string>();
+var corsOrigins = cfg.GetSection("CORS:Origins").Get<string[]>() ?? new[] { "http://localhost:3000", "http://localhost:8080" };
 var allowCredentials = bool.Parse(cfg["CORS:AllowCredentials"] ?? "true");
 
 // --- Services ---
@@ -89,7 +84,7 @@ builder.Services.AddCors(options =>
 
 var app = builder.Build();
 
-// Logging, recovery — у ASP.NET свое, плюс можно добавить
+// Middleware
 app.UseRouting();
 app.UseCors("SoundyCors");
 
@@ -101,7 +96,7 @@ app.UseAuthorization();
 Directory.CreateDirectory(coversDir);
 app.UseStaticFiles(new StaticFileOptions
 {
-    FileProvider = new Microsoft.Extensions.FileProviders.PhysicalFileProvider(Path.GetFullPath(coversDir)),
+    FileProvider = new PhysicalFileProvider(Path.GetFullPath(coversDir)),
     RequestPath = "/covers"
 });
 
@@ -117,12 +112,14 @@ using (var scope = app.Services.CreateScope())
     var auth = scope.ServiceProvider.GetRequiredService<IAuthService>();
     await auth.CreateUserAsync(adminUsername, adminPassword);
 
-    Console.WriteLine($"Admin credentials: {adminUsername} / {adminPassword}");
+    Console.WriteLine($"🎵 Admin credentials: {adminUsername} / {adminPassword}");
 }
 
 var host = cfg["Server:Host"] ?? "0.0.0.0";
-var port = cfg["Server:Port"] ?? "8000";
+var port = cfg["Server:Port"] ?? "8080";
 
 app.Urls.Add($"http://{host}:{port}");
+
+Console.WriteLine($"🚀 Server starting on http://{host}:{port}");
 
 app.Run();

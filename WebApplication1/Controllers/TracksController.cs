@@ -104,10 +104,20 @@ public class TracksController : ControllerBase
             });
         }
 
-        _ = _trackService.IncrementPlayCountAsync(id); // fire-and-forget как goroutine
+        _ = _trackService.IncrementPlayCountAsync(id); // fire-and-forget
 
         var filePath = track.FilePath;
-        var contentType = "audio/mpeg"; // можно улучшить по расширению
+
+        // Определяем Content-Type по расширению
+        var contentType = Path.GetExtension(filePath).ToLowerInvariant() switch
+        {
+            ".mp3" => "audio/mpeg",
+            ".wav" => "audio/wav",
+            ".flac" => "audio/flac",
+            ".m4a" => "audio/mp4",
+            ".ogg" => "audio/ogg",
+            _ => "application/octet-stream"
+        };
 
         // FileStream + range support
         var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
@@ -117,7 +127,7 @@ public class TracksController : ControllerBase
     // POST /api/v1/upload (protected)
     [HttpPost("upload")]
     [Authorize]
-    [RequestSizeLimit(200_000_000)] // на всякий случай
+    [RequestSizeLimit(200_000_000)]
     public async Task<IActionResult> Upload(
         [FromForm(Name = "audio")] IFormFile audio,
         [FromForm(Name = "track_artist")] string? trackArtist,

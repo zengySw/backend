@@ -44,6 +44,7 @@ public class RateLimitingMiddleware
             if (counter.Count > _limit)
             {
                 context.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+                await context.Response.WriteAsync("Too many requests");
                 return;
             }
         }
